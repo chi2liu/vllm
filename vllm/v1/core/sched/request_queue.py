@@ -138,34 +138,62 @@ class FCFSRequestQueue(deque[Request], RequestQueue):
 
 class PriorityRequestQueue(RequestQueue):
     """
-    A priority queue that supports heap operations.
+    A priority queue with lazy deletion optimization for heap operations.
 
     Requests with a smaller value of `priority` are processed first.
     If multiple requests have the same priority, the one with the earlier
     `arrival_time` is processed first.
+    
+    This implementation uses lazy deletion to optimize remove operations:
+    - Removing items marks them as deleted instead of rebuilding the heap
+    - Deleted items are skipped during pop operations
+    - The heap is rebuilt when deleted items exceed a threshold
     """
 
-    def __init__(self) -> None:
+    def __init__(self, rebuild_threshold: float = 0.5) -> None:
+        """Initialize the priority queue.
+        
+        Args:
+            rebuild_threshold: Fraction of deleted items that triggers rebuild.
+                              Default 0.5 (rebuild when 50% of heap is deleted).
+        """
         self._heap: list[tuple[int, float, Request]] = []
+        self._deleted: set[Request] = set()  # Track deleted requests
+        self._size = 0  # Actual number of valid items
+        self._rebuild_threshold = rebuild_threshold
 
     def add_request(self, request: Request) -> None:
         """Add a request to the queue according to priority policy."""
+        # If this request was previously deleted, remove from deleted set
+        self._deleted.discard(request)
         heapq.heappush(self._heap,
                        (request.priority, request.arrival_time, request))
+        self._size += 1
 
     def pop_request(self) -> Request:
         """Pop a request from the queue according to priority policy."""
-        if not self._heap:
-            raise IndexError("pop from empty heap")
-        _, _, request = heapq.heappop(self._heap)
-        return request
+        # Skip deleted items lazily
+        while self._heap:
+            priority, arrival, request = heapq.heappop(self._heap)
+            if request not in self._deleted:
+                self._size -= 1
+                return request
+            else:
+                # Remove from deleted set as we've now removed it from heap
+                self._deleted.discard(request)
+        raise IndexError("pop from empty heap")
 
     def peek_request(self) -> Request:
         """Peek at the next request in the queue without removing it."""
-        if not self._heap:
-            raise IndexError("peek from empty heap")
-        _, _, request = self._heap[0]
-        return request
+        # Skip deleted items at the front
+        while self._heap:
+            _, _, request = self._heap[0]
+            if request not in self._deleted:
+                return request
+            # Remove deleted item from front
+            heapq.heappop(self._heap)
+            self._deleted.discard(request)
+        raise IndexError("peek from empty heap")
 
     def prepend_request(self, request: Request) -> None:
         """Add a request to the queue according to priority policy.
@@ -183,31 +211,53 @@ class PriorityRequestQueue(RequestQueue):
             self.add_request(request)
 
     def remove_request(self, request: Request) -> None:
-        """Remove a specific request from the queue."""
-        self._heap = [(p, t, r) for p, t, r in self._heap if r != request]
-        heapq.heapify(self._heap)
+        """Remove a specific request from the queue using lazy deletion."""
+        if request not in self._deleted:
+            self._deleted.add(request)
+            self._size -= 1
+            self._maybe_rebuild()
 
     def remove_requests(self, requests: Iterable[Request]) -> None:
-        """Remove multiple specific requests from the queue."""
-        requests_to_remove = set(requests)
-        self._heap = [(p, t, r) for p, t, r in self._heap
-                      if r not in requests_to_remove]
-        heapq.heapify(self._heap)
+        """Remove multiple specific requests using lazy deletion.
+        
+        This is O(k) where k is the number of requests to remove,
+        instead of O(n) for rebuilding the entire heap.
+        """
+        for request in requests:
+            if request not in self._deleted:
+                self._deleted.add(request)
+                self._size -= 1
+        self._maybe_rebuild()
+
+    def _maybe_rebuild(self) -> None:
+        """Rebuild the heap if too many items are deleted."""
+        if len(self._deleted) > len(self._heap) * self._rebuild_threshold:
+            self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Rebuild the heap without deleted items."""
+        old_heap = self._heap
+        self._heap = []
+        for priority, arrival, request in old_heap:
+            if request not in self._deleted:
+                heapq.heappush(self._heap, (priority, arrival, request))
+        self._deleted.clear()
 
     def __bool__(self) -> bool:
         """Check if queue has any requests."""
-        return bool(self._heap)
+        return self._size > 0
 
     def __len__(self) -> int:
-        """Get number of requests in queue."""
-        return len(self._heap)
+        """Get number of valid (non-deleted) requests in queue."""
+        return self._size
 
     def __iter__(self) -> Iterator[Request]:
         """Iterate over the queue according to priority policy."""
         heap_copy = self._heap[:]
         while heap_copy:
             _, _, request = heapq.heappop(heap_copy)
-            yield request
+            if request not in self._deleted:
+                yield request
 
     def __reversed__(self) -> Iterator[Request]:
         """Iterate over the queue in reverse priority order."""
