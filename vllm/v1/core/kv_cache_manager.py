@@ -57,7 +57,13 @@ class KVCacheBlocks:
         ]
 
     def new_empty(self) -> "KVCacheBlocks":
-        """Creates a new KVCacheBlocks instance with no blocks."""
+        """Creates a new KVCacheBlocks instance with no blocks.
+        
+        Note: This could be optimized by caching the empty tuple,
+        but since this is a method of KVCacheBlocks (not KVCacheManager),
+        we don't have access to cached structures. Consider refactoring
+        if this becomes a bottleneck.
+        """
         return KVCacheBlocks(tuple([] for _ in range(len(self.blocks))))
 
 
@@ -98,6 +104,11 @@ class KVCacheManager:
         )
         self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
         self.block_pool = self.coordinator.block_pool
+
+        # Pre-generate the empty tuple structure to avoid repeated creation
+        # This is frequently used in hot paths during scheduling
+        self._empty_blocks_tuple: tuple[list[KVCacheBlock], ...] = tuple(
+            [] for _ in range(self.num_kv_cache_groups))
         self.kv_cache_config = kv_cache_config
 
     @property
@@ -359,6 +370,11 @@ class KVCacheManager:
             self.coordinator.cache_blocks(request, num_computed_tokens)
 
     def create_empty_block_list(self) -> KVCacheBlocks:
-        """Creates a new KVCacheBlocks instance with no blocks."""
-        return KVCacheBlocks(tuple([]
-                                   for _ in range(self.num_kv_cache_groups)))
+        """Creates a new KVCacheBlocks instance with no blocks.
+        
+        This method uses a pre-generated tuple structure to avoid
+        repeated tuple creation in hot paths.
+        """
+        # Use pre-generated tuple to avoid repeated tuple allocation
+        # Each call creates a new KVCacheBlocks but reuses the tuple
+        return KVCacheBlocks(self._empty_blocks_tuple)
