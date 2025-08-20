@@ -249,6 +249,12 @@ class Scheduler(SchedulerInterface):
                     num_lookahead_tokens=self.num_lookahead_tokens)
                 if new_blocks is None:
                     # The request cannot be scheduled.
+                    # Check if we have any requests to preempt
+                    if not self.running:
+                        # No requests to preempt, cannot schedule this request
+                        # Move to the next request in the waiting queue
+                        break
+                    
                     # Preempt the lowest-priority request.
                     if self.policy == SchedulingPolicy.PRIORITY:
                         preempted_req = max(
